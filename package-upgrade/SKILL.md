@@ -121,6 +121,18 @@ bash scripts/detect_env.sh <project_path>
 - 若有 → 直接使用
 - 若無 → 詢問使用者並在使用者回答後將 site host 存到 memory
 
+**組出完整 URL 並保留** (後續 Phase 7 commit/PR 必須引用):
+
+```
+issue_url = f"https://{site_host}/browse/{issue_key}"
+```
+
+範例: `https://trendmicro.atlassian.net/browse/V1E-148968`
+
+這個 URL 是必須的 — 即使使用者一開始只給 issue key,也要在這一步補出完整連結,
+並在 Phase 7.2 commit message 第一行、Phase 7.3 PR title/body 中明顯呈現,
+讓 git web portal (GitHub/Bitbucket/GitLab) 上的 reviewer 一眼就能跳到 Jira ticket。
+
 #### Step 1.C.2: 抓取 ticket 內容
 
 **優先用 Atlassian MCP** (使用者多半已透過 claude.ai 連接):
@@ -509,7 +521,11 @@ python scripts/ast_scanner.py <project_path> <package_name>
 
 **在修改任何專案內容之前，必須先建立新的 feature 分支。**
 
-分支命名規則:
+分支命名取決於觸發類型 — **若有 `jira_context`,issue key 一律放在最前面**,
+讓 git 端 (branch list / PR list / `git log --all`) 可以直接掃到 Jira ticket。
+
+#### 一般升級 (沒有 Jira / 沒有 CVE)
+
 ```bash
 git checkout -b feature/Update-{PackageName}-to-{TargetVersion}
 ```
@@ -520,11 +536,37 @@ git checkout -b feature/Update-requests-to-2.32.0
 git checkout -b feature/Update-django-to-5.1
 ```
 
-如果是修復 CVE:
+#### CVE 修復 (沒有 Jira)
+
 ```bash
 git checkout -b fix/CVE-{CVE-ID}-{PackageName}
 # 範例: git checkout -b fix/CVE-2024-35195-cryptography
 ```
+
+#### Jira 觸發 (Phase 1 情況 C)
+
+```bash
+# 一般升級
+git checkout -b feature/{ISSUE_KEY}-Update-{PackageName}-to-{TargetVersion}
+
+# CVE 修復 + Jira (兩者都有時, Jira 優先放最前面)
+git checkout -b fix/{ISSUE_KEY}-CVE-{CVE-ID}-{PackageName}
+```
+
+範例:
+```bash
+git checkout -b feature/V1E-148968-Update-requests-to-2.32.0
+git checkout -b fix/V1E-148968-CVE-2024-35195-cryptography
+```
+
+**為什麼 Jira ID 放最前面**:
+- `git branch --list 'feature/V1E-*'` 可以一次列出某個 epic / project 的所有分支
+- PR 列表頁排序後同一 ticket 的相關 branch 會聚在一起
+- 配合 Phase 7.2 commit 的 `[<issue_key>]` 前綴、Phase 7.3 PR title 的 `[<issue_key>]` 前綴,
+  branch / commit / PR 三層都能一眼追到 Jira ticket
+
+**字元限制**: 分支名只用 `[A-Za-z0-9._-]`,不要放空白或中文。
+若 `{PackageName}` 含特殊字元 (例 `python-dateutil`),保留原 `-` 即可。
 
 ### Step 5.2: 環境備份
 
@@ -834,6 +876,35 @@ bash scripts/run_tests.sh <project_path> --all
 - 如果是 CVE: 包含 CVE 編號和嚴重性
 - 如果有 BREAKING CHANGE: 使用 footer
 
+**若有 `jira_context` (Phase 1 情況 C 觸發)**:
+
+第一行必須以 `[<issue_key>]` 開頭,讓 git history 一眼可追到 Jira ticket。
+Body 中加上 `Jira: <issue_url>` 一行 (用完整 URL,不要只寫 issue key),
+這在 GitHub/Bitbucket/GitLab 的 commit 頁面會自動 render 成可點擊連結。
+
+格式:
+```
+[<issue_key>] type(scope): description
+
+<body — 為什麼這樣做>
+
+Jira: <issue_url>
+```
+
+範例:
+```
+[V1E-148968] chore(deps): upgrade requests from 2.28.0 to 2.32.0
+
+Bumps requests to address CVE-2024-35195 (high severity, urllib3
+session cert verification bypass). Touches 3 files in services/http/.
+
+Jira: https://trendmicro.atlassian.net/browse/V1E-148968
+```
+
+**注意**: `[<issue_key>]` 含括號是慣例,即使會讓第一行略長也保留 — 這個前綴是
+讓 commit log (`git log --oneline`) 可掃描的關鍵。72 字元上限以 description
+本身計算 (不含 `[KEY] ` 前綴)。
+
 ### Step 7.3: 建立 Pull Request
 
 將所有變更 commit 後,建立 Pull Request:
@@ -851,8 +922,36 @@ gh pr create --title "chore: upgrade {package} to {version}" \
   --body "$(cat <migration_report.md>)"
 ```
 
+**若有 `jira_context`**:
+
+PR title 必須以 `[<issue_key>]` 開頭,PR body **第一行** 必須是
+`Jira: <issue_url>` (完整 URL),讓 reviewer 在 GitHub/Bitbucket/GitLab
+PR 列表頁直接看得到 Jira link、不用點進 description 才找到。
+
+```bash
+gh pr create \
+  --title "[<issue_key>] chore: upgrade {package} to {version}" \
+  --body "$(cat <<'EOF'
+Jira: <issue_url>
+
+<Phase 7.1 完整遷移報告>
+EOF
+)"
+```
+
+範例:
+```
+Title: [V1E-148968] chore: upgrade requests to 2.32.0
+Body 開頭:
+  Jira: https://trendmicro.atlassian.net/browse/V1E-148968
+
+  ## Executive Summary
+  ...
+```
+
 PR 內容應包含:
-- Phase 7.1 產生的完整遷移報告作為 PR description
+- **(若有 jira_context) PR title 前綴 `[<issue_key>]` + body 第一行 `Jira: <issue_url>`**
+- Phase 7.1 產生的完整遷移報告作為 PR description (接在 Jira link 之後)
 - 標記為 `dependencies` / `security` label (如果是 CVE 修復)
 - 指定 reviewers (如有需要)
 
